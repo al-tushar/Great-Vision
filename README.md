@@ -12,9 +12,9 @@ An AI-powered real-time assistant built with Python, OpenCV, and YOLO that helps
 
 ## Project Structure
 
-```text
-sdd-key-tool/
-├── sdd_key.py          # Main CLI seed/key generator script
-├── requirements.txt    # Python dependencies (if applicable)
-├── .gitignore          # Files and directories for Git to ignore
-└── README.md           # Project documentation and usage guide
+Great-Vision/
+├── app_blind_assistant_complete.py   # Main real-time application (YOLO + Distance + Spatial + Async TTS)
+├── models/                           # Directory for AI weights (e.g., yolo11n.pt, best.pt)
+├── requirements.txt                  # Python package dependencies
+├── .gitignore                        # Files/folders excluded from git (.venv/, __pycache__, runs/)
+└── README.md                         # Project documentation and usage guide
