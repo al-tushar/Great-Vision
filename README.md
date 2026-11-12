@@ -9,4 +9,12 @@ An AI-powered real-time assistant built with Python, OpenCV, and YOLO that helps
 - **Asynchronous Text-to-Speech**: Runs voice synthesis in a separate background thread so the video stream and detection loop never lag or freeze.
 - **Priority Hazard Alerting**: Automatically prioritizes objects directly blocking the path ahead.
 
+
 ## Project Structure
+
+```text
+sdd-key-tool/
+├── sdd_key.py          # Main CLI seed/key generator script
+├── requirements.txt    # Python dependencies (if applicable)
+├── .gitignore          # Files and directories for Git to ignore
+└── README.md           # Project documentation and usage guide
