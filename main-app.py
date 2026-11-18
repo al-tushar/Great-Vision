@@ -7,34 +7,28 @@ import pyttsx3
 from PIL import Image
 from ultralytics import YOLO
 
-# Optional imports for BLIP scene description (Press 'g')
 try:
     import torch
     from transformers import BlipForConditionalGeneration, BlipProcessor
-
     BLIP_AVAILABLE = True
 except ImportError:
     BLIP_AVAILABLE = False
 
-# --- CALIBRATION & CONSTANTS ---
-FOCAL_LENGTH = 600  # Estimated webcam focal length in pixels
+FOCAL_LENGTH = 600
 
 AVERAGE_HEIGHTS = {
-    "person": 1.70,
-    "chair": 0.90,
-    "bottle": 0.20,
-    "laptop": 0.25,
-    "cell phone": 0.15,
-    "backpack": 0.45,
-    "tv": 0.60,
-    "cup": 0.10,
+    # Default fallback heights for general COCO classes + your custom classes
+    "person": 1.70, "bicycle": 1.00, "car": 1.50, "motorcycle": 1.00,
+    "bus": 3.00, "truck": 2.50, "chair": 0.90, "couch": 0.90,
+    "bed": 0.60, "table": 0.75, "tv": 0.60, "laptop": 0.25,
+    "cell phone": 0.15, "bottle": 0.20, "cup": 0.10, "book": 0.20,
+    "backpack": 0.45, "umbrella": 0.90, "handbag": 0.30,
+    "drone": 0.30, "phone": 0.15, "ruler": 0.05
 }
 DEFAULT_HEIGHT = 0.5
 
 
 class SpeechWorker:
-    """Manages background text-to-speech so the video feed never freezes."""
-
     def __init__(self):
         self.queue = queue.Queue()
         self.running = True
@@ -42,14 +36,13 @@ class SpeechWorker:
         self.thread.start()
 
     def _worker(self):
-        engine = pyttsx3.init()
-        engine.setProperty("rate", 175)
-
         while self.running:
             try:
                 text = self.queue.get(timeout=0.1)
                 if text is None:
                     break
+                engine = pyttsx3.init()
+                engine.setProperty("rate", 175)
                 engine.say(text)
                 engine.runAndWait()
                 self.queue.task_done()
@@ -59,7 +52,6 @@ class SpeechWorker:
                 print(f"Speech error: {e}")
 
     def speak(self, text):
-        # Flush older backlog for immediate alert priority
         while not self.queue.empty():
             try:
                 self.queue.get_nowait()
@@ -75,7 +67,6 @@ class SpeechWorker:
 
 
 def estimate_distance(class_name, pixel_height):
-    """Calculates approximate distance in feet."""
     if pixel_height <= 0:
         return 0.0
     real_height = AVERAGE_HEIGHTS.get(class_name, DEFAULT_HEIGHT)
@@ -85,31 +76,13 @@ def estimate_distance(class_name, pixel_height):
 
 
 def main():
-    print("Loading YOLO model...")
-    model = YOLO("yolo11n.pt")
-
-    # Load BLIP scene captioning model if available
-    blip_processor, blip_model = None, None
-    if BLIP_AVAILABLE:
-        print(
-            "Loading BLIP scene captioning model (this may take a moment on first"
-            " run)..."
-        )
-        try:
-            blip_processor = BlipProcessor.from_pretrained(
-                "Salesforce/blip-image-captioning-base"
-            )
-            blip_model = BlipForConditionalGeneration.from_pretrained(
-                "Salesforce/blip-image-captioning-base"
-            )
-            print("BLIP model loaded successfully.")
-        except Exception as e:
-            print(f"Could not load BLIP model: {e}")
-    else:
-        print(
-            "Notice: Transformers/Torch not fully installed. Pressing 'g' for scene"
-            " description will be disabled."
-        )
+    print("Loading models...")
+    # 1. Load your custom specialized model
+    try:
+        custom_model = YOLO("best.pt")
+    except Exception as e:
+        print(f"Could not load best.pt: {e}")
+        return
 
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -117,125 +90,83 @@ def main():
         return
 
     speech = SpeechWorker()
-    speech.speak("Great Vision assistant active. All systems online.")
-
-    print("\n--- Great-Vision Assistant Running ---")
-    print("Controls:")
-    print("  [q] - Quit application")
-    print("  [r] - Repeat last announcement")
-    print("  [g] - Generate full scene description (BLIP AI)")
+    speech.speak("Great Vision universal tracker active.")
 
     last_spoken_time = 0
-    speech_interval = 3.5  # Seconds between automated object alerts
+    speech_interval = 4.0
     last_announcement = "System initialized."
 
     try:
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
-                print("Failed to grab frame.")
                 break
 
             height, width, _ = frame.shape
-            results = model(frame, verbose=False)
+
+            # Run inference on BOTH models
+            custom_results = custom_model(frame, conf=0.4, verbose=False)
+            general_results = general_model(frame, conf=0.4, verbose=False)
 
             detected_objects = []
 
-            for r in results:
+            # Process custom model results
+            for r in custom_results:
                 for box in r.boxes:
                     cls_id = int(box.cls[0])
-                    conf = float(box.conf[0])
-                    if conf > 0.5:
-                        label = model.names[cls_id]
+                    label = custom_model.names[cls_id]
+                    xyxy = box.xyxy[0].cpu().numpy()
+                    x1, y1, x2, y2 = xyxy[0], xyxy[1], xyxy[2], xyxy[3]
 
-                        # Bounding box coordinates
-                        xyxy = box.xyxy[0].cpu().numpy()
-                        x1, y1, x2, y2 = xyxy[0], xyxy[1], xyxy[2], xyxy[3]
+                    dist = estimate_distance(label, y2 - y1)
+                    x_center = (x1 + x2) / 2
+                    pos = "on your left" if x_center < width * \
+                        0.35 else ("on your right" if x_center > width * 0.65 else "straight ahead")
 
-                        box_height_pixels = y2 - y1
-                        x_center = (x1 + x2) / 2
+                    detected_objects.append((label, pos, dist))
+                    cv2.rectangle(frame, (int(x1), int(y1)),
+                                  (int(x2), int(y2)), (0, 255, 0), 2)
+                    cv2.putText(frame, f"{label} {dist}ft", (int(x1), max(
+                        int(y1)-10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
 
-                        # Calculations
-                        distance_ft = estimate_distance(
-                            label, box_height_pixels)
+            # Process general model results (skipping duplicates if already caught)
+            for r in general_results:
+                for box in r.boxes:
+                    cls_id = int(box.cls[0])
+                    label = general_model.names[cls_id]
+                    xyxy = box.xyxy[0].cpu().numpy()
+                    x1, y1, x2, y2 = xyxy[0], xyxy[1], xyxy[2], xyxy[3]
 
-                        if x_center < width * 0.35:
-                            position = "on your left"
-                        elif x_center > width * 0.65:
-                            position = "on your right"
-                        else:
-                            position = "straight ahead"
+                    dist = estimate_distance(label, y2 - y1)
+                    x_center = (x1 + x2) / 2
+                    pos = "on your left" if x_center < width * \
+                        0.35 else ("on your right" if x_center > width * 0.65 else "straight ahead")
 
-                        detected_objects.append((label, position, distance_ft))
+                    detected_objects.append((label, pos, dist))
+                    cv2.rectangle(frame, (int(x1), int(y1)),
+                                  (int(x2), int(y2)), (255, 0, 0), 2)
+                    cv2.putText(frame, f"{label} {dist}ft", (int(x1), max(
+                        int(y1)-10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2, cv2.LINE_AA)
 
-                        # Visual overlay
-                        display_text = f"{label} ~{distance_ft}ft ({position})"
-                        cv2.rectangle(
-                            frame, (int(x1), int(y1)), (int(
-                                x2), int(y2)), (0, 255, 0), 2
-                        )
-                        cv2.putText(
-                            frame,
-                            display_text,
-                            (int(x1), int(y1 - 10)),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            (0, 255, 0),
-                            2,
-                        )
-
-            # Throttled real-time speech logic
+            # Announce objects
             current_time = time.time()
-            if detected_objects and (
-                current_time - last_spoken_time > speech_interval
-            ):
-                detected_objects.sort(key=lambda x: x[2])  # Sort by distance
-                front_hazards = [
-                    obj
-                    for obj in detected_objects
-                    if obj[1] == "straight ahead" and obj[2] < 8.0
-                ]
-
-                target = front_hazards[0] if front_hazards else detected_objects[0]
-                label, position, dist = target
-
-                announcement = f"{label}, about {dist} feet {position}"
+            if detected_objects and (current_time - last_spoken_time > speech_interval):
+                detected_objects.sort(key=lambda x: x[2])
+                phrases = [f"{lbl}, {d} feet {p}" for lbl,
+                           p, d in detected_objects[:3]]
+                announcement = ". ".join(phrases)
                 speech.speak(announcement)
                 last_announcement = announcement
                 last_spoken_time = current_time
 
-            cv2.imshow("Great-Vision Ultimate Assistant", frame)
-
-            # Keyboard Interactivity
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
+            cv2.imshow("Great-Vision Universal", frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
-            elif key == ord("r"):
-                speech.speak(f"Repeating: {last_announcement}")
-            elif key == ord("g"):
-                if blip_model and blip_processor:
-                    speech.speak("Analyzing scene description...")
-                    # Convert OpenCV BGR frame to RGB PIL Image
-                    pil_img = Image.fromarray(
-                        cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                    inputs = blip_processor(
-                        images=pil_img, return_tensors="pt")
-                    output = blip_model.generate(**inputs, max_new_tokens=50)
-                    caption = blip_processor.decode(
-                        output[0], skip_special_tokens=True)
-
-                    scene_text = f"Scene overview: {caption}"
-                    print(f"\n[BLIP AI] {scene_text}")
-                    speech.speak(scene_text)
-                    last_announcement = scene_text
-                else:
-                    speech.speak("Scene captioning model is not available.")
 
     finally:
         cap.release()
         cv2.destroyAllWindows()
         speech.stop()
-        print("Great-Vision assistant shut down safely.")
 
 
 if __name__ == "__main__":
